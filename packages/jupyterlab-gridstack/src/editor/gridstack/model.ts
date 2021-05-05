@@ -28,15 +28,14 @@ import { Widget } from '@lumino/widgets';
 
 import { Signal, ISignal } from '@lumino/signaling';
 
-import { deleteIcon } from '../icons';
-
-import { GridStackItem } from './item';
+import { GridStackItemWidget, GridStackItemModel, ItemState } from '../item';
 
 import {
   DashboardView,
   DashboardCellView,
   validateDashboardView,
-  validateDashboardCellView
+  validateDashboardCellView,
+  LockSignal
 } from '../format';
 
 export const VIEW = 'grid_default';
@@ -60,6 +59,7 @@ export class GridStackModel {
 
     this._ready = new Signal<this, null>(this);
     this._cellRemoved = new Signal<this, string>(this);
+    this._cellPinned = new Signal<this, LockSignal>(this);
     this._stateChanged = new Signal<this, null>(this);
     this._contentChanged = new Signal<this, null>(this);
 
@@ -94,6 +94,13 @@ export class GridStackModel {
    */
   get cellRemoved(): ISignal<this, string> {
     return this._cellRemoved;
+  }
+
+  /**
+   * A signal emitted when a cell pinned.
+   */
+  get cellPinned(): ISignal<this, LockSignal> {
+    return this._cellPinned;
   }
 
   /**
@@ -247,11 +254,29 @@ export class GridStackModel {
   }
 
   /**
+   * Lock/unlock a cell.
+   *
+   * @param id - Cell id.
+   */
+  public lockCell(id: string, lock: boolean): void {
+    for (let i = 0; i < this._context.model.cells?.length; i++) {
+      const cell = this._context.model.cells.get(i);
+
+      if (cell.id === id) {
+        const data = cell.metadata.get('extensions') as Record<string, any>;
+        data.jupyter_dashboards.views[VIEW].locked = lock;
+        cell.metadata.set('extensions', data);
+        this._context.model.dirty = true;
+      }
+    }
+  }
+
+  /**
    * Create a new cell widget from a `CellModel`.
    *
    * @param cellModel - `ICellModel`.
    */
-  public createCell(cellModel: ICellModel): GridStackItem {
+  public createCell(cellModel: ICellModel): GridStackItemWidget {
     let item: Widget;
 
     switch (cellModel.type) {
@@ -302,19 +327,15 @@ export class GridStackModel {
       }
     }
 
-    const close = document.createElement('div');
-    close.className = 'trash-can';
-    deleteIcon.element({ container: close, height: '16px', width: '16px' });
-
-    close.onclick = (): void => {
-      const data = cellModel.metadata.get('extensions') as Record<string, any>;
-      data.jupyter_dashboards.views[VIEW].hidden = true;
-      cellModel.metadata.set('extensions', data);
-      this._context.model.dirty = true;
-      this._cellRemoved.emit(cellModel.id);
+    const options = {
+      cellId: cellModel.id,
+      cellWidget: item,
+      isLocked: false
     };
 
-    return new GridStackItem(cellModel.id, item, close);
+    const model = new GridStackItemModel(options);
+    model.stateChanged.connect(this._itemChanged);
+    return new GridStackItemWidget(item, model);
   }
 
   /**
@@ -396,6 +417,29 @@ export class GridStackModel {
     }
   }
 
+  private _itemChanged = (item: GridStackItemModel, change: ItemState) => {
+    switch (change) {
+      case ItemState.CLOSED:
+        this.hideCell(item.cellId);
+        this._cellRemoved.emit(item.cellId);
+        item.stateChanged.disconnect(this._itemChanged);
+        break;
+
+      case ItemState.LOCKED:
+        this.lockCell(item.cellId, true);
+        this._cellPinned.emit({ cellId: item.cellId, lock: true });
+        break;
+
+      case ItemState.UNLOCKED:
+        this.lockCell(item.cellId, false);
+        this._cellPinned.emit({ cellId: item.cellId, lock: false });
+        break;
+
+      default:
+        break;
+    }
+  };
+
   /**
    * Check the dashboard cell metadata.
    *
@@ -414,7 +458,8 @@ export class GridStackModel {
               row: null,
               col: null,
               width: 2,
-              height: 2
+              height: 2,
+              locked: false
             }
           }
         }
@@ -429,7 +474,8 @@ export class GridStackModel {
             row: null,
             col: null,
             width: 2,
-            height: 2
+            height: 2,
+            locked: false
           }
         }
       };
@@ -442,7 +488,8 @@ export class GridStackModel {
         row: null,
         col: null,
         width: 2,
-        height: 2
+        height: 2,
+        locked: false
       };
       cell.metadata.set('extensions', data);
     }
@@ -455,6 +502,7 @@ export class GridStackModel {
 
   private _ready: Signal<this, null>;
   private _cellRemoved: Signal<this, string>;
+  private _cellPinned: Signal<this, LockSignal>;
   private _stateChanged: Signal<this, null>;
   private _contentChanged: Signal<this, null>;
 }
